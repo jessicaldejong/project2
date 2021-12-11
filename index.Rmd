@@ -1,0 +1,377 @@
+---
+title: 'Project 2: Data Mining, Classification, Prediction'
+author: "SDS322E"
+date: ''
+output:
+  html_document:
+    toc: yes
+    toc_float:
+      collapsed: no
+      smooth_scroll: yes
+  pdf_document:
+    toc: no
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, eval = TRUE, fig.align = "center", warning = F, message = F,
+tidy=TRUE, tidy.opts=list(width.cutoff=60), R.options=list(max.print=100))
+
+class_diag <- function(score, truth, positive, cutoff=.5){
+
+  pred <- factor(score>cutoff,levels=c("TRUE","FALSE"))
+  truth <- factor(truth==positive, levels=c("TRUE","FALSE"))
+
+  tab<-table(truth, pred)
+  acc=sum(diag(tab))/sum(tab)
+  sens=tab[1,1]/rowSums(tab)[1]
+  spec=tab[2,2]/rowSums(tab)[2]
+  ppv=tab[1,1]/colSums(tab)[1]
+
+#CALCULATE F1
+  f1=2*(sens*ppv)/(sens+ppv)
+  
+#CALCULATE EXACT AUC
+  truth<-as.numeric(truth=="TRUE")
+  ord<-order(score, decreasing=TRUE)
+  score <- score[ord]; truth <- truth[ord]
+  TPR=cumsum(truth)/max(1,sum(truth))
+  FPR=cumsum(!truth)/max(1,sum(!truth))
+  dup<-c(score[-1]>=score[-length(score)], FALSE)
+  TPR<-c(0,TPR[!dup],1); FPR<-c(0,FPR[!dup],1)
+  n <- length(TPR)
+  auc<- sum( ((TPR[-1]+TPR[-n])/2) * (FPR[-1]-FPR[-n]) )
+  round(data.frame(acc,sens,spec,ppv,f1,ba=(sens+spec)/2,auc, row.names = "Metrics"),4)
+}
+```
+
+# Mining, Classification, Prediction
+
+## Jessica de Jong JLD4864
+### Introduction 
+
+The data-set I've chosen contains data centered around potential heart failure in women and men. The variables in the data-set include age, sex, type of chest pain, resting blood pressure, resting ECG, MAX HR (heart rate), and whether or not the person had heart disease or not (1 or 0, respectively). The binary variable I'm focusing on is the heart disease variable. There are 918 observations in this data-set, with a total of twelve variables. For my binary variable, there is 410 people without heart disease, and 508 with heart disease. I found this data-set on Kaggle.com, under health-related data-sets. 
+
+
+
+```{R}
+library(tidyverse)
+# read your dataset
+read_csv("heart.csv")
+heart <- read_csv("heart.csv")
+
+# observations for binary variable
+sum(heart$HeartDisease == 0)
+sum(heart$HeartDisease == 1)
+
+# no tidying required
+```
+
+### Cluster Analysis
+
+```{R}
+# my installations 
+#install.packages("cluster")
+#install.packages("GGally")
+
+library(cluster)
+library(GGally)
+
+# MY CLUSTERING CODE
+
+# three variables to cluster
+heartpam <- heart %>%
+    select(RestingBP, Cholesterol, MaxHR)
+
+sil_width <- vector()
+
+for (i in 2:10) {
+    pam_fit <- pam(heartpam, k = i)
+    sil_width[i] <- pam_fit$silinfo$avg.width
+  }
+
+ggplot() + geom_line(aes(x = 1:10, y = sil_width)) + scale_x_continuous(name = "k",
+    breaks = 1:10)
+
+pamh <- heartpam %>% pam(2)
+print(pamh)
+
+heartpam %>% slice(pamh$id.med)
+
+ggpairs(heartpam, columns = 1:3, aes(color = as.factor(pamh$clustering)))
+
+pamcluster <- heartpam %>%
+    mutate(cluster = as.factor(pamh$clustering))
+
+pamcluster %>%
+    ggplot(aes(Cholesterol, RestingBP, color = MaxHR, shape = cluster)) +
+    geom_point(size = 2.5)
+
+pamh$silinfo$avg.width
+
+plot(pamh, which = 2)
+
+heart_gower <- heart %>%
+    select(Cholesterol, RestingBP, MaxHR, HeartDisease)
+heart_gower$HeartDisease <- as.factor(heart_gower$HeartDisease)
+
+gower1 <- daisy(heart_gower, metric = "gower")
+
+silwidth <- vector()
+
+for (i in 2:10) {
+    pamfit <- pam(gower1, diss = TRUE, k = i)
+    sil_width[i] <- pamfit$silinfo$avg.width
+}
+
+ggplot() + geom_line(aes(x = 1:10, y = sil_width)) + scale_x_continuous(name = "k",
+    breaks = 1:10)
+
+pamh <- pam(gower1, k = 2, diss = T)
+pamh
+
+heart_gower %>%
+    slice(pamh$id.med)
+
+pamh$silinfo$widths
+
+plot(pamh, which = 2)
+
+```
+
+In my clustering analysis, I chose to zone in on the variables of cholesterol level, resting blood pressure, and maximum heart rate for the binary variable of heart disease. The optimal clustering for was a value of two. 
+
+In the first cluster, the medoid is ID 526, and in the second cluster, the medoid is ID #344. 
+
+The silhouette width was a value of 0.7013589. This is a considerable goodness of fit value for my model - this is the same as the average silhouette width in the plot. 
+
+In the plot (made using ggpairs function), cholesterol is slightly correlated with Max BP and resting BP. 
+
+I am using numeric variables cholesterol, max BP, and resting BP w binary value. The Gower medoid for the first cluster is ID #125, and the medoid for the second cluster is ID #531. The silhouette width is 0.69, which is an average of the gower values. 
+
+### Dimensionality Reduction with PCA
+
+```{R}
+# MY PCA CODE HERE
+
+heart_PCA <- heart %>%
+    select(Cholesterol, RestingBP, MaxHR) %>%
+    select_if(is.numeric) %>%
+    scale
+
+pcah <- princomp(heart_PCA)
+
+summary(pcah, loadings = T)
+
+eigvalue <- pcah$sdev^2
+varprop = round(eigvalue/sum(eigvalue), 2)
+
+ggplot() + geom_bar(aes(y = varprop, x = 1:3), stat = "identity") +
+    xlab("") + geom_text(aes(x = 1:3, y = varprop, label = round(varprop,
+    2)), vjust = 1, col = "orange", size = 5) + scale_y_continuous(breaks = seq(0,
+    0.6, 0.2), labels = scales::percent) + scale_x_continuous(breaks = 1:10)
+
+round(cumsum(eigvalue)/sum(eigvalue), 2)
+
+eigvalue
+
+heart_PCA <- as.data.frame(heart_PCA)
+heart_PCA$HeartDisease <- heart$HeartDisease
+heart_PCA$HeartDisease <- ifelse(heart_PCA$HeartDisease ==
+    1, "Yes", "No")
+
+heart_PCA %>%
+    mutate(PC1 = pcah$scores[, 1], PC2 = pcah$scores[, 2]) %>%
+    ggplot(aes(PC1, PC2, color = HeartDisease)) + geom_point() +
+    coord_fixed()
+
+pcah$loadings[1:3, 1:2] %>%
+    as.data.frame %>%
+    rownames_to_column %>%
+    ggplot() + geom_hline(aes(yintercept = 0), lty = 2) + geom_vline(aes(xintercept = 0),
+    lty = 2) + ylab("PC2") + xlab("PC1") + geom_segment(aes(x = 0,
+    y = 0, xend = Comp.1, yend = Comp.2), arrow = arrow(), col = "red") +
+    geom_label(aes(x = Comp.1 * 1.1, y = Comp.2 * 1.1, label = rowname))
+```
+
+Eigen values and variance percentages - optimal number of PCS to keep? I found the optimal number of PCs was two (found form eigen values) and the model accounts for 77% of the variance. 
+
+When PC1 scores high, Cholesterol and Max HR are directly correlated. When choleseterol levels are igh, max HR is high. 
+
+When you score high in PC2, cholesterol and resting bp are inversely correlated. When cholesterol levels are high, bp levels are low.
+
+###  Linear Classifier
+
+```{R}
+# install ... 
+#install.packages("caret")
+library(caret)
+
+# MY LINEAR CLASSIFIER CODE
+heart$HeartDisease <-as.numeric(heart$HeartDisease)
+fit <- glm(HeartDisease ~ Cholesterol + RestingBP + Age + MaxHR, data = heart, family = binomial)
+summary(fit)
+
+score <- predict(fit, type = "response")
+head(score)
+
+heart$HeartDisease <- ifelse(heart$HeartDisease ==
+    1, TRUE, FALSE)
+heart$HeartDisease <- as.factor(heart$HeartDisease)
+
+predicth <- predict(fit, newdata = heart, type = "response")
+table(data = predicth > 0.5, reference = heart$HeartDisease)
+
+heart$HeartDisease <- ifelse(heart$HeartDisease ==
+    TRUE, 1, 0)
+
+heart$HeartDisease <- as.numeric(heart$HeartDisease)
+
+class_diag(score, heart$HeartDisease, positive = 1)
+```
+
+```{R}
+# MY CROSS VALIDATION CODE HERE
+
+#number of folds
+k = 5
+
+# randomly order rows, create folds
+datasample <- heart[sample(nrow(heart)), ]
+folds <- cut(seq(1:nrow(heart)), breaks = k, labels = F)
+diags <- NULL
+
+# create training and test sets, test model, diagnostics
+for (i in 1:k) {
+    train <- datasample[folds != i, ]
+    test <- datasample[folds == i, ]
+    truth <- test$HeartDisease
+    fit <- glm(HeartDisease ~ Cholesterol + RestingBP + MaxHR +
+        Age, data = train, family = binomial)
+    probs <- predict(fit, newdata = test, type = "response")
+    diags <- rbind(diags, class_diag(probs, truth, positive = 1))
+}
+
+summarize_all(diags, mean)
+```
+
+Cholesterol, age, and max HR are all significant linear predictors of heart disease. 
+The AUC value is 0.7596 for k-folds,
+and the AUC value for logistic regression is 0.7626.
+These two AUC values are relatively similar, however there are signs of over fitting because the AUC k-folds value is less than the AUC logistic regression value.
+
+### Non-Parametric Classifier
+
+```{R}
+#install.packages("caret")
+library(caret)
+# MY NON-PARAMETRIC CLASSIFIER CODE
+
+heart2 <- heart %>% select(MaxHR, Age, RestingBP, Cholesterol, HeartDisease)
+
+fit <- knn3(factor(HeartDisease == 1, levels = c("TRUE",
+    "FALSE")) ~ Cholesterol + MaxHR + Age + RestingBP, data = heart2,
+    k = 5)
+
+y_hat <- predict(fit, newdata = heart2)
+y_hat %>%
+    head(4)
+
+class_diag(y_hat[, 1], heart$HeartDisease,
+    positive = 1)
+
+table(truth = factor(heart$HeartDisease == 1,
+    levels = c("TRUE", "FALSE")), prediction = factor(y_hat[,
+    1] > 0.5, levels = c("TRUE", "FALSE")))
+
+
+```
+
+```{R}
+# my cross-validation of np classifier here
+k = 3
+data <- heart[sample(nrow(heart)), ]
+folds <- cut(seq(1:nrow(heart)), breaks = k, labels = F)
+diags <- NULL
+for (i in 1:k) {
+    train <- data[folds != i, ]
+    test <- data[folds == i, ]
+    truth <- test$HeartDisease
+    fit <- knn3(HeartDisease ~ Cholesterol + MaxHR + RestingBP +
+        Age, data = train)
+    probs <- predict(fit, newdata = test)[, 2]
+    diags <- rbind(diags, class_diag(probs, truth, positive = 1))
+}
+
+summarize_all(diags, mean)
+```
+The AUC value is 0.7277333 for k-folds,
+and the AUC value for non-parametric analysis is 0.8659. 
+
+These two AUC values have more differences than the linear classifier, which means this model is less reliable. However, it is still somewhat good at predicting new observations. There are signs of overfitting here, more than the linear classifier. 
+### Regression/Numeric Prediction
+
+```{R}
+# my regression model code here
+
+fit <- lm(Cholesterol ~ MaxHR + Age + RestingBP, data = heart)
+
+yhat <- predict(fit)
+
+mean((heart$Cholesterol - yhat)^2)
+```
+
+```{R}
+# my cross-validation of regression model here
+
+k = 7
+data <- heart[sample(nrow(heart)), ]
+folds <- cut(seq(1:nrow(heart)), breaks = k, labels = F)
+diags <- NULL
+for (i in 1:k) {
+    train <- data[folds != i, ]
+    test <- data[folds == i, ]
+    fit <- lm(Cholesterol ~ ., data = train)
+    yhat <- predict(fit, newdata = test)
+    diags <- mean((test$Cholesterol - yhat)^2)
+}
+
+mean(diags)
+```
+
+The average k-fold value for the MSE is 10936.3.
+The overall MSE value for the model is 11075.51. 
+
+These values show signs for overfitting because the overall MSE value is higher than the average k-fold value. The MSE value shows that there is a lot of error in this model. 
+
+### Python 
+
+```{R}
+#install.packages("reticulate")
+library(reticulate)
+use_python("/usr/bin/python3", required = F)
+x <- heart$Cholesterol
+y <- heart$MaxHR
+```
+
+```{python}
+# my python code here???
+x = r.x
+y = r.y
+```
+
+```{r}
+x <- py$x
+y <- py$y
+
+plot(x, y)
+```
+For the python section, I made two r variables x and y. With the function r., I changed the two R variables into python variables. Then, I used the py$ function to turn these variables back into R. I plotted these variables in R Studio. 
+
+Discussion
+
+### Concluding Remarks
+
+No concluding remarks. I enjoyed this semester. Thank you! (-:
+
+
+
